@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <title>Messy sample room</title>
+  <rect width="1200" height="900" fill="#6f6a62"/>
+  <rect width="1200" height="575" fill="#7c776e"/>
+  <rect y="560" width="1200" height="22" fill="#5c564e"/>
+  <rect y="582" width="1200" height="318" fill="#4e3b30"/>
+  <g fill="#5a463a">
+    <rect y="600" width="1200" height="18"/>
+    <rect y="660" width="1200" height="14"/>
+    <rect y="730" width="1200" height="16"/>
+    <rect y="800" width="1200" height="12"/>
+  </g>
+  <circle cx="600" cy="48" r="22" fill="#f4f1ea"/>
+  <polygon points="560,70 640,70 700,250 500,250" fill="#fff6df" opacity="0.18"/>
+  <rect x="86" y="72" width="286" height="360" rx="6" fill="#2c3338"/>
+  <g stroke="#c8c0b4" stroke-width="10" opacity="0.85">
+    <line x1="100" y1="100" x2="358" y2="108"/>
+    <line x1="100" y1="140" x2="358" y2="132"/>
+    <line x1="100" y1="180" x2="358" y2="196"/>
+    <line x1="100" y1="230" x2="300" y2="220"/>
+    <line x1="150" y1="270" x2="358" y2="286"/>
+    <line x1="100" y1="320" x2="358" y2="308"/>
+    <line x1="100" y1="370" x2="358" y2="390"/>
+  </g>
+  <g transform="rotate(-8 980 210)">
+    <rect x="880" y="96" width="200" height="250" fill="#cbb892" stroke="#8d7b62" stroke-width="8"/>
+    <rect x="900" y="116" width="160" height="150" fill="#8aa0b5"/>
+  </g>
+  <ellipse cx="760" cy="760" rx="150" ry="28" fill="#000" opacity="0.18"/>
+  <rect x="470" y="530" width="560" height="200" rx="18" fill="#cbbba6"/>
+  <rect x="500" y="552" width="180" height="70" rx="12" fill="#e6dccd"/>
+  <rect x="430" y="690" width="150" height="36" rx="6" fill="#e2c27a" transform="rotate(-6 505 708)"/>
+  <circle cx="470" cy="676" r="16" fill="#c4473a"/>
+  <ellipse cx="980" cy="700" rx="90" ry="48" fill="#6d88a8"/>
+  <ellipse cx="1020" cy="680" rx="70" ry="36" fill="#c48b9a"/>
+  <ellipse cx="950" cy="670" rx="50" ry="30" fill="#d9d3c8"/>
+  <path d="M120 760 C 180 730, 240 790, 300 750" fill="none" stroke="#241c18" stroke-width="6"/>
+  <rect x="150" y="780" width="28" height="40" rx="4" fill="#c4473a"/>
+  <rect width="1200" height="900" fill="#1a140f" opacity="0.18"/>
+</svg>
