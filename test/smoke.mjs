@@ -6,11 +6,14 @@ import { fileURLToPath } from 'node:url';
 import {
   CHAT_URL,
   IMAGE_URL,
+  XAI_CHAT_URL,
+  XAI_IMAGE_URL,
   LISTEN_HOST,
   buildChatBody,
   buildImageBody,
   extractMessageText,
   listenPort,
+  missingKeyMessage,
   parseRoastText,
   resolveGlowUp,
   start,
@@ -20,21 +23,43 @@ const TINY_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAf
 let child;
 let base;
 
-test('request builders use the current OpenRouter models', () => {
+test('request builders use the cheap OpenRouter models and can switch to xAI', () => {
   assert.equal(CHAT_URL, 'https://openrouter.ai/api/v1/chat/completions');
   assert.equal(IMAGE_URL, 'https://openrouter.ai/api/v1/images');
+  assert.equal(XAI_CHAT_URL, 'https://api.x.ai/v1/responses');
+  assert.equal(XAI_IMAGE_URL, 'https://api.x.ai/v1/images/generations');
   assert.equal(LISTEN_HOST, '0.0.0.0');
-  const chat = buildChatBody({ dataUrl: TINY_PNG, intensity: 'savage' });
-  assert.equal(chat.model, 'x-ai/grok-4.7');
-  assert.equal(chat.reasoning_effort, 'low');
-  assert.equal(chat.messages[1].content[0].type, 'image_url');
-  assert.match(chat.messages[1].content[1].text, /savage/);
-  const image = buildImageBody({ prompt: 'A brighter room', aspectRatio: '4:3', dataUrl: TINY_PNG, quality: 'low' });
-  assert.equal(image.model, 'x-ai/grok-imagine-image-2.0');
-  assert.equal(image.input_references[0].type, 'image_url');
-  assert.equal(image.resolution, '1K');
+  const saved = saveEnv(['PROVIDER', 'ROAST_MODEL', 'IMAGE_MODEL']);
+  delete process.env.PROVIDER;
+  delete process.env.ROAST_MODEL;
+  delete process.env.IMAGE_MODEL;
+  try {
+    const chat = buildChatBody({ dataUrl: TINY_PNG, intensity: 'savage' });
+    assert.equal(chat.model, 'google/gemini-2.5-flash-lite');
+    assert.equal(chat.reasoning_effort, undefined);
+    assert.equal(chat.messages[1].content[0].type, 'image_url');
+    assert.match(chat.messages[1].content[1].text, /savage/);
+    const image = buildImageBody({ prompt: 'A brighter room', aspectRatio: '4:3', dataUrl: TINY_PNG });
+    assert.equal(image.model, 'black-forest-labs/flux.2-klein-4b');
+    assert.equal(image.quality, undefined);
+    assert.equal(image.input_references[0].type, 'image_url');
+    const xaiChat = buildChatBody({ dataUrl: TINY_PNG, intensity: 'gentle', which: 'xai' });
+    assert.equal(xaiChat.model, 'grok-4.7');
+    assert.equal(xaiChat.reasoning.effort, 'low');
+    assert.equal(xaiChat.store, false);
+    assert.equal(xaiChat.input[1].content[0].type, 'input_image');
+    const xaiImage = buildImageBody({ prompt: 'A brighter room', aspectRatio: '4:3', which: 'xai' });
+    assert.equal(xaiImage.model, 'grok-imagine-image-2.0');
+    assert.equal(xaiImage.response_format, 'b64_json');
+    assert.equal(xaiImage.resolution, '1k');
+    assert.equal(xaiImage.input_references, undefined);
+    process.env.PROVIDER = 'xai';
+    assert.match(missingKeyMessage(), /XAI_API_KEY/);
+  } finally {
+    restoreEnv(saved);
+  }
   const text = extractMessageText({
-    choices: [{ message: { content: '{"roast":"The desk is a landfill with ambition and a lamp.","suggestions":["Move the pile."],"glowUpPrompt":"A clean desk."}' } }],
+    output: [{ type: 'message', content: [{ type: 'output_text', text: '{"roast":"The desk is a landfill with ambition and a lamp.","suggestions":["Move the pile."],"glowUpPrompt":"A clean desk."}' }] }],
   });
   const roast = parseRoastText(text);
   assert.match(roast.roast, /landfill/);
@@ -64,6 +89,10 @@ test('server binds 0.0.0.0 and reads PORT', async () => {
 test('mock server roasts without a key', async () => {
   const env = { ...process.env, MOCK: '1', MOCK_DELAY_MS: '0', PORT: '0' };
   delete env.OPENROUTER_API_KEY;
+  delete env.XAI_API_KEY;
+  delete env.PROVIDER;
+  delete env.ROAST_MODEL;
+  delete env.IMAGE_MODEL;
   child = spawn(process.execPath, ['server.js'], { cwd: fileURLToPath(new URL('..', import.meta.url)), env, stdio: ['ignore', 'pipe', 'pipe'] });
   base = await waitForPort(child);
   const health = await fetch(`${base}/api/health`, {
@@ -73,8 +102,10 @@ test('mock server roasts without a key', async () => {
   assert.equal(health.headers.get('permissions-policy'), 'camera=(self)');
   const body = await health.json();
   assert.equal(body.mock, true);
+  assert.equal(body.provider, 'openrouter');
   assert.equal(body.hasKey, false);
-  assert.equal(body.roastModel, 'x-ai/grok-4.7');
+  assert.equal(body.roastModel, 'google/gemini-2.5-flash-lite');
+  assert.equal(body.imageModel, 'black-forest-labs/flux.2-klein-4b');
 
   const page = await fetch(`${base}/`);
   assert.equal(page.status, 200);
@@ -113,6 +144,10 @@ test('mock server roasts without a key', async () => {
 test('missing key is a clear error and does not redirect behind a proxy', async () => {
   const env = { ...process.env, MOCK: '0', PORT: '0' };
   delete env.OPENROUTER_API_KEY;
+  delete env.XAI_API_KEY;
+  delete env.PROVIDER;
+  delete env.ROAST_MODEL;
+  delete env.IMAGE_MODEL;
   const server = spawn(process.execPath, ['server.js'], { cwd: fileURLToPath(new URL('..', import.meta.url)), env, stdio: ['ignore', 'pipe', 'pipe'] });
   const url = await waitForPort(server);
   try {
@@ -145,6 +180,17 @@ test('missing key is a clear error and does not redirect behind a proxy', async 
 after(() => {
   child?.kill();
 });
+
+function saveEnv(names) {
+  return Object.fromEntries(names.map((name) => [name, process.env[name]]));
+}
+
+function restoreEnv(saved) {
+  for (const [name, value] of Object.entries(saved)) {
+    if (value == null) delete process.env[name];
+    else process.env[name] = value;
+  }
+}
 
 function roast(extra) {
   return fetch(`${base}/api/roast`, {

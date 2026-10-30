@@ -41,9 +41,10 @@ async function loadHealth() {
       banner.textContent = 'Demo mode is on (MOCK=1). Roasts and the glow-up are samples, so you can present without an API key.';
     } else if (!state.health.hasKey) {
       banner.hidden = false;
-      banner.textContent = 'No API key yet. Add OPENROUTER_API_KEY to .env, or restart with MOCK=1.';
+      const keyName = state.health.provider === 'xai' ? 'XAI_API_KEY' : 'OPENROUTER_API_KEY';
+      banner.textContent = `No API key yet. Add ${keyName} to .env, or restart with MOCK=1.`;
     }
-    foot.textContent = `Roast ${state.health.roastModel} · Glow-up ${state.health.imageModel}`;
+    foot.textContent = `${state.health.provider} · ${state.health.roastModel} · ${state.health.imageModel}`;
   } catch {
     banner.hidden = false;
     banner.textContent = 'The app server is not responding.';

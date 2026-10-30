@@ -9,7 +9,17 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 
 export const CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 export const IMAGE_URL = 'https://openrouter.ai/api/v1/images';
+export const XAI_CHAT_URL = 'https://api.x.ai/v1/responses';
+export const XAI_IMAGE_URL = 'https://api.x.ai/v1/images/generations';
 export const LISTEN_HOST = '0.0.0.0';
+
+// Prices checked against the OpenRouter models API on 2026-10-30.
+// gemini-2.5-flash-lite: $0.10 / 1M input, $0.40 / 1M output, image in, text out.
+// flux.2-klein-4b: $0.014 per output megapixel, accepts a reference photo.
+export const DEFAULT_OPENROUTER_ROAST_MODEL = 'google/gemini-2.5-flash-lite';
+export const DEFAULT_OPENROUTER_IMAGE_MODEL = 'black-forest-labs/flux.2-klein-4b';
+export const DEFAULT_XAI_ROAST_MODEL = 'grok-4.7';
+export const DEFAULT_XAI_IMAGE_MODEL = 'grok-imagine-image-2.0';
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -35,26 +45,55 @@ loadEnv(path.join(ROOT, '.env'));
 
 let inflight = 0;
 
+export function provider() {
+  return String(process.env.PROVIDER || 'openrouter').trim().toLowerCase() === 'xai' ? 'xai' : 'openrouter';
+}
+
+export function roastModelFor(which = provider()) {
+  if (which === provider() && process.env.ROAST_MODEL) return process.env.ROAST_MODEL;
+  return which === 'xai' ? DEFAULT_XAI_ROAST_MODEL : DEFAULT_OPENROUTER_ROAST_MODEL;
+}
+
+export function imageModelFor(which = provider()) {
+  if (which === provider() && process.env.IMAGE_MODEL) return process.env.IMAGE_MODEL;
+  return which === 'xai' ? DEFAULT_XAI_IMAGE_MODEL : DEFAULT_OPENROUTER_IMAGE_MODEL;
+}
+
 export function roastModel() {
-  return process.env.ROAST_MODEL || 'x-ai/grok-4.7';
+  return roastModelFor(provider());
 }
 
 export function imageModel() {
-  return process.env.IMAGE_MODEL || 'x-ai/grok-imagine-image-2.0';
+  return imageModelFor(provider());
 }
 
 export function isMock() {
   return ['1', 'true', 'yes'].includes(String(process.env.MOCK || '').toLowerCase());
 }
 
-export function hasKey() {
-  return Boolean(apiKey());
-}
-
-function apiKey() {
-  const key = String(process.env.OPENROUTER_API_KEY || '').trim();
+function usableKey(name) {
+  const key = String(process.env[name] || '').trim();
   if (!key || key === 'your-key-here') return '';
   return key;
+}
+
+function openRouterKey() {
+  return usableKey('OPENROUTER_API_KEY');
+}
+
+function xaiKey() {
+  return usableKey('XAI_API_KEY');
+}
+
+export function hasKey() {
+  return provider() === 'xai' ? Boolean(xaiKey()) : Boolean(openRouterKey());
+}
+
+export function missingKeyMessage() {
+  if (provider() === 'xai') {
+    return 'No xAI API key. Add XAI_API_KEY to .env, or restart with MOCK=1 to rehearse the demo.';
+  }
+  return 'No OpenRouter API key. Add OPENROUTER_API_KEY to .env, or restart with MOCK=1 to rehearse the demo.';
 }
 
 function imageQuality() {
@@ -85,34 +124,82 @@ function userPrompt(intensity) {
   return `${tone}\nLook at the photo and return the JSON object.`;
 }
 
-export function buildChatBody({ dataUrl, intensity }) {
+export function buildChatBody({ dataUrl, intensity, which = provider() }) {
+  const text = userPrompt(intensity);
+  if (which === 'xai') {
+    return {
+      model: roastModelFor('xai'),
+      store: false,
+      reasoning: { effort: 'low' },
+      input: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: [
+            { type: 'input_image', image_url: dataUrl, detail: 'high' },
+            { type: 'input_text', text },
+          ],
+        },
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'room_roast',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['roast', 'suggestions', 'glowUpPrompt'],
+            properties: {
+              roast: { type: 'string' },
+              suggestions: { type: 'array', items: { type: 'string' } },
+              glowUpPrompt: { type: 'string' },
+            },
+          },
+        },
+      },
+    };
+  }
   return {
-    model: roastModel(),
-    reasoning_effort: 'low',
+    model: roastModelFor('openrouter'),
     response_format: { type: 'json_object' },
-    max_tokens: 2000,
+    max_tokens: 800,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',
         content: [
           { type: 'image_url', image_url: { url: dataUrl } },
-          { type: 'text', text: userPrompt(intensity) },
+          { type: 'text', text },
         ],
       },
     ],
   };
 }
 
-export function buildImageBody({ prompt, aspectRatio, dataUrl, quality }) {
+export function buildImageBody({ prompt, aspectRatio, dataUrl, which = provider(), quality }) {
+  const model = imageModelFor(which);
+  if (which === 'xai') {
+    return {
+      model,
+      prompt,
+      aspect_ratio: aspectRatio,
+      resolution: '1k',
+      quality: quality || imageQuality(),
+      response_format: 'b64_json',
+      n: 1,
+    };
+  }
   const body = {
-    model: imageModel(),
+    model,
     prompt,
     aspect_ratio: aspectRatio,
-    resolution: '1K',
-    quality: quality || imageQuality(),
     n: 1,
   };
+  if (model.includes('grok-imagine')) {
+    body.quality = quality || imageQuality();
+    body.resolution = '1K';
+  }
   if (dataUrl) {
     body.input_references = [{ type: 'image_url', image_url: { url: dataUrl } }];
   }
@@ -121,10 +208,20 @@ export function buildImageBody({ prompt, aspectRatio, dataUrl, quality }) {
 
 export function extractMessageText(payload) {
   const content = payload?.choices?.[0]?.message?.content;
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string' && content.trim()) return content;
   if (Array.isArray(content)) {
-    return content.map((part) => part?.text || part?.content || '').join('');
+    const joined = content.map((part) => part?.text || part?.content || '').join('');
+    if (joined.trim()) return joined;
   }
+  const chunks = [];
+  for (const item of payload?.output || []) {
+    if (item?.type !== 'message' || !Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (part?.type === 'output_text' && part.text) chunks.push(part.text);
+    }
+  }
+  if (chunks.length) return chunks.join('');
+  if (typeof payload?.output_text === 'string') return payload.output_text;
   return '';
 }
 
@@ -137,7 +234,7 @@ export function parseRoastText(text) {
     const start = trimmed.indexOf('{');
     const end = trimmed.lastIndexOf('}');
     if (start < 0 || end <= start) {
-      throw new Error('Grok did not return a roast. Try the photo again.');
+      throw new Error('The model did not return a roast. Try the photo again.');
     }
     parsed = JSON.parse(trimmed.slice(start, end + 1));
   }
@@ -152,7 +249,7 @@ export function parseRoastText(text) {
     glowUpPrompt = `Photorealistic redesign of the same room. ${suggestions.join('. ')}`;
   }
   if (roast.length < 8 || suggestions.length < 1) {
-    throw new Error('Grok returned an incomplete roast. Try the photo again.');
+    throw new Error('The model returned an incomplete roast. Try the photo again.');
   }
   return {
     roast: roast.slice(0, 800),
@@ -310,6 +407,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       mock: isMock(),
+      provider: provider(),
       hasKey: hasKey(),
       roastModel: roastModel(),
       imageModel: imageModel(),
@@ -338,9 +436,7 @@ async function handleRoast(req, res) {
   const sample = Boolean(body.sample);
 
   if (!isMock() && !hasKey()) {
-    return sendJson(res, 503, {
-      error: 'No OpenRouter API key. Add OPENROUTER_API_KEY to .env, or restart with MOCK=1 to rehearse the demo.',
-    });
+    return sendJson(res, 503, { error: missingKeyMessage() });
   }
 
   inflight += 1;
@@ -380,12 +476,17 @@ async function runLive({ dataUrl, intensity, aspectRatio, signal }) {
   const roast = await requestRoast({ dataUrl, intensity, signal });
   const prompt = `${roast.glowUpPrompt} Photorealistic interior photograph. Preserve the architecture and camera angle of the reference photo. No people, no pets, no text, no watermark.`;
   const glow = await resolveGlowUp(async () => {
-    try {
-      return await requestImage({ prompt, aspectRatio, dataUrl, signal });
-    } catch (err) {
-      console.error(`[glow-up] reference failed, retrying text-only: ${scrub(err.message)}`);
-      return requestImage({ prompt, aspectRatio, signal });
+    const attempts = imageAttempts();
+    let lastError;
+    for (const which of attempts) {
+      try {
+        return await requestImageWithRetry(which, { prompt, aspectRatio, dataUrl, signal });
+      } catch (err) {
+        lastError = err;
+        console.error(`[glow-up] ${which} failed: ${scrub(err.message)}`);
+      }
     }
+    throw lastError || new Error('No image provider is configured.');
   });
   return {
     roast: roast.roast,
@@ -396,40 +497,69 @@ async function runLive({ dataUrl, intensity, aspectRatio, signal }) {
   };
 }
 
+function imageAttempts() {
+  const order = provider() === 'xai' ? ['xai', 'openrouter'] : ['openrouter', 'xai'];
+  return order.filter((which) => (which === 'xai' ? xaiKey() : openRouterKey()));
+}
+
 async function requestRoast({ dataUrl, intensity, signal }) {
-  const payload = await openRouter(CHAT_URL, buildChatBody({ dataUrl, intensity }), signal, 75000);
+  const which = provider();
+  const payload = await postJson(
+    which === 'xai' ? XAI_CHAT_URL : CHAT_URL,
+    buildChatBody({ dataUrl, intensity, which }),
+    which === 'xai' ? xaiKey() : openRouterKey(),
+    signal,
+    75000,
+    which,
+  );
   const roast = parseRoastText(extractMessageText(payload));
   if (!roast.glowUpPrompt) roast.glowUpPrompt = glowPromptFrom(roast.suggestions);
   return roast;
 }
 
-async function requestImage({ prompt, aspectRatio, dataUrl, signal }) {
-  const payload = await openRouter(
-    IMAGE_URL,
-    buildImageBody({ prompt, aspectRatio, dataUrl, quality: imageQuality() }),
+async function requestImageWithRetry(which, args) {
+  try {
+    return await requestImage(which, args);
+  } catch (err) {
+    if (!args.dataUrl || which === 'xai') throw err;
+    console.error(`[glow-up] ${which} reference failed, retrying text-only: ${scrub(err.message)}`);
+    return requestImage(which, { ...args, dataUrl: undefined });
+  }
+}
+
+async function requestImage(which, { prompt, aspectRatio, dataUrl, signal }) {
+  const payload = await postJson(
+    which === 'xai' ? XAI_IMAGE_URL : IMAGE_URL,
+    buildImageBody({ prompt, aspectRatio, dataUrl, which }),
+    which === 'xai' ? xaiKey() : openRouterKey(),
     signal,
     100000,
+    which,
   );
   const direct = extractImageDataUrl(payload);
   if (direct) return direct;
-  const url = payload?.data?.[0]?.url;
-  if (url) return fetchUrlAsDataUrl(url, signal);
-  throw new Error('OpenRouter returned no image.');
+  const remote = payload?.data?.[0]?.url;
+  if (remote) return fetchUrlAsDataUrl(remote, signal);
+  throw new Error(`${which === 'xai' ? 'xAI' : 'OpenRouter'} returned no image.`);
 }
 
-async function openRouter(url, body, signal, timeoutMs) {
+async function postJson(url, body, key, signal, timeoutMs, vendor) {
   const timeout = AbortSignal.timeout(timeoutMs);
   const combined = AbortSignal.any([signal, timeout]);
+  const who = vendor === 'xai' ? 'xAI' : 'OpenRouter';
   let response;
   try {
+    const headers = {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    };
+    if (vendor === 'openrouter') {
+      headers['HTTP-Referer'] = 'http://localhost:3000';
+      headers['X-Title'] = 'Roast My Room';
+    }
     response = await fetch(url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey()}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'http://localhost:3000',
-        'X-Title': 'Roast My Room',
-      },
+      headers,
       body: JSON.stringify(body),
       signal: combined,
     });
@@ -440,7 +570,7 @@ async function openRouter(url, body, signal, timeoutMs) {
       wrapped.status = err.name === 'TimeoutError' ? 504 : undefined;
       throw wrapped;
     }
-    const wrapped = new Error("Couldn't reach OpenRouter. Check the network, or use MOCK=1.");
+    const wrapped = new Error(`Couldn't reach ${who}. Check the network, or use MOCK=1.`);
     wrapped.status = 502;
     throw wrapped;
   }
@@ -452,8 +582,8 @@ async function openRouter(url, body, signal, timeoutMs) {
     json = {};
   }
   if (!response.ok) {
-    const message = errorMessage(json, `OpenRouter request failed (${response.status}).`);
-    const wrapped = new Error(friendlyStatus(response.status, message));
+    const message = errorMessage(json, `${who} request failed (${response.status}).`);
+    const wrapped = new Error(friendlyStatus(response.status, message, vendor));
     wrapped.status = response.status;
     throw wrapped;
   }
@@ -477,10 +607,12 @@ function errorMessage(json, fallback) {
   return fallback;
 }
 
-function friendlyStatus(status, message) {
-  if (status === 401 || status === 403) return 'OpenRouter rejected the API key. Check OPENROUTER_API_KEY in .env.';
-  if (status === 402) return 'OpenRouter refused the request for billing. Check the key credit balance.';
-  if (status === 429) return 'OpenRouter rate limit hit. Wait a moment and try again.';
+function friendlyStatus(status, message, vendor) {
+  const who = vendor === 'xai' ? 'xAI' : 'OpenRouter';
+  const keyName = vendor === 'xai' ? 'XAI_API_KEY' : 'OPENROUTER_API_KEY';
+  if (status === 401 || status === 403) return `${who} rejected the API key. Check ${keyName} in .env.`;
+  if (status === 402) return `${who} refused the request for billing. Check the key credit balance.`;
+  if (status === 429) return `${who} rate limit hit. Wait a moment and try again.`;
   return scrub(message);
 }
 
@@ -578,8 +710,8 @@ if (isDirectRun) {
     console.log(`Roast My Room listening on http://127.0.0.1:${port}`);
     console.log(`Bound to ${LISTEN_HOST}:${port}. Point an HTTPS tunnel at this port for a public demo link.`);
     if (isMock()) console.log('MOCK=1 — sample roast and glow-up, no API calls.');
-    else if (!hasKey()) console.log('OPENROUTER_API_KEY is not set. Add it to .env or start with MOCK=1.');
-    else console.log(`Roast model ${roastModel()} · image model ${imageModel()}`);
+    console.log(`Provider ${provider()} · roast ${roastModel()} · image ${imageModel()}`);
+    if (!isMock() && !hasKey()) console.log(missingKeyMessage());
     for (const url of lanUrls(port)) console.log(`On this network: ${url}`);
   }).catch((err) => {
     if (err.code === 'EADDRINUSE') console.error(`Port ${process.env.PORT || 3000} is already in use. Set PORT to a free port.`);
